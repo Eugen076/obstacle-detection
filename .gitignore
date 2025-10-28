@@ -1,0 +1,9 @@
+# Virtual environment
+.venv/
+
+# Video / media files
+videos/
+
+# Python cache
+__pycache__/
+*.pyc
