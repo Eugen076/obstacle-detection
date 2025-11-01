@@ -1,38 +1,81 @@
+from ultralytics import YOLO
 import cv2
 import numpy as np
+import math
 
-video_color = cv2.VideoCapture("videos/challenge_color_848x480.mp4")
-video_depth = cv2.VideoCapture("videos/challenge_depth_848x480.mp4")
+model = YOLO("yolov8n.pt")
+
+video_path = "videos/challenge_color_848x480.mp4"
+cap = cv2.VideoCapture(video_path)
+
+if not cap.isOpened():
+    print("Eroare la deschiderea videoclipului.")
+    exit()
+
+previous_sizes = {}
+previous_distances = {}
+
+FOCAL_LENGTH = 650
+AVERAGE_PERSON_HEIGHT = 1.7
 
 while True:
-    ret_c, frame_c = video_color.read()
-    ret_d, frame_d = video_depth.read()
-    if not ret_c or not ret_d:
-
+    ret, frame = cap.read()
+    if not ret:
         break
 
-    depth_gray = cv2.cvtColor(frame_d, cv2.COLOR_BGR2GRAY)
-    depth_norm = cv2.normalize(depth_gray, None, 0, 255, cv2.NORM_MINMAX)
-    depth_norm = np.uint8(depth_norm)
+    results = model.track(frame, persist=True, verbose=False)[0]
+    ids = results.boxes.id.int().cpu().tolist() if results.boxes.id is not None else []
 
+    for i, box in enumerate(results.boxes):
+        cls = int(box.cls[0])
+        label = model.names[cls]
+        if label != "person":
+            continue
 
-    _, mask_close = cv2.threshold(depth_norm, 60, 255, cv2.THRESH_BINARY_INV)
+        obj_id = ids[i] if i < len(ids) else -1
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        w, h = x2 - x1, y2 - y1
+        size = w * h
 
+        if h > 0:
+            distance = (FOCAL_LENGTH * AVERAGE_PERSON_HEIGHT) / h
+        else:
+            distance = 0
 
-    contours, _ = cv2.findContours(mask_close, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for c in contours:
-        if cv2.contourArea(c) > 500:
-            x, y, w, h = cv2.boundingRect(c)
-            cv2.rectangle(frame_c, (x, y), (x + w, y + h), (0, 0, 255), 2)
-            cv2.putText(frame_c, "Obstacol", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        distance = np.clip(distance, 0.5, 15)
 
-    cv2.imshow("Color", frame_c)
-    cv2.imshow("Adancime", depth_norm)
-    cv2.imshow("Obstacole", mask_close)
+        if obj_id in previous_sizes:
+            delta = size - previous_sizes[obj_id]
+            if delta > 2000:
+                status = "Apropiere"
+                color = (0, 0, 255)
+            elif delta < -2000:
+                status = "Depărtare"
+                color = (0, 255, 0)
+            else:
+                status = "Stabil"
+                color = (255, 255, 0)
+        else:
+            status = "Detectat"
+            color = (255, 255, 255)
 
-    if cv2.waitKey(30) & 0xFF == 27:
+        previous_sizes[obj_id] = size
+        previous_distances[obj_id] = distance
+
+        text = f"ID {obj_id} | {status} | {distance:.2f} m"
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(frame, text, (x1, max(25, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+        bar_x = x1
+        bar_y = y2 + 10
+        bar_w = int(200 * (1 - min(distance / 10, 1)))
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + 10), color, -1)
+        cv2.putText(frame, f"{distance:.1f} m", (bar_x, bar_y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+    cv2.imshow("Approach / Move Away Detection", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-video_color.release()
-video_depth.release()
+cap.release()
 cv2.destroyAllWindows()
+
